@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>連続コマ撮りアプリ（回転対応）</title>
+  <title>連続コマ撮りアプリ（カメラ許可対応）</title>
   <style>
     body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 15px; background: #f4f4f4; margin: 0; }
     
@@ -17,9 +17,8 @@
       overflow: hidden;
       box-shadow: 0 4px 10px rgba(0,0,0,0.2);
     }
-    /* 描画・プレビュー用キャンバスと動画表示 */
     canvas, video { width: 100%; height: 100%; object-fit: cover; }
-    #videoPreview { display: none; } /* 内部処理用 */
+    #videoPreview { display: none; }
 
     .controls { display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 320px; }
     select, input, button { padding: 10px; font-size: 14px; border-radius: 6px; border: 1px solid #ccc; }
@@ -28,6 +27,9 @@
     button:disabled { background: #ccc; cursor: not-allowed; }
     button.danger { background: #dc3545; }
     button.success { background: #28a745; }
+    
+    /* 許可ボタン用スタイル */
+    #permissionBtn { background: #17a2b8; font-size: 16px; padding: 12px; }
   </style>
 </head>
 <body>
@@ -41,18 +43,19 @@
   </div>
 
   <div class="controls">
-    <!-- カメラ選択 -->
-    <select id="cameraSelect">
+    <!-- 最初に使用許可を得るための領域 -->
+    <button id="permissionBtn">カメラとマイクの使用を許可する</button>
+
+    <!-- 許可後に有効化される操作群 -->
+    <select id="cameraSelect" disabled>
       <option value="">カメラを選択してください</option>
     </select>
 
-    <!-- コマ秒数設定 -->
     <div style="display:flex; justify-content:space-between; align-items:center;">
       <label for="secInput">1コマの撮影時間:</label>
       <input type="number" id="secInput" value="3" min="1" style="width:60px;"> 秒
     </div>
 
-    <!-- 操作ボタン -->
     <button id="captureBtn" class="success" disabled>1コマ撮影</button>
     
     <div class="btn-group">
@@ -61,19 +64,19 @@
     </div>
   </div>
 
-  <p id="status">カメラを選択して起動してください。</p>
+  <p id="status">「カメラとマイクの使用を許可する」を押してください。</p>
 
   <script>
     let currentStream;
     let mediaRecorder;
     let recordedChunks = [];
-    let animationFrameId;
 
     const video = document.getElementById('videoPreview');
     const canvas = document.getElementById('canvasPreview');
     const ctx = canvas.getContext('2d');
     const result = document.getElementById('result');
     
+    const permissionBtn = document.getElementById('permissionBtn');
     const cameraSelect = document.getElementById('cameraSelect');
     const secInput = document.getElementById('secInput');
     const captureBtn = document.getElementById('captureBtn');
@@ -81,12 +84,33 @@
     const finishBtn = document.getElementById('finishBtn');
     const status = document.getElementById('status');
 
-    // Canvasサイズを縦長9:16（720x1280）に固定設定
     canvas.width = 720;
     canvas.height = 1280;
 
-    // 1. 利用可能なカメラデバイスの取得・列挙
-    async function getCameras() {
+    // 1. 最初に使用許可を取得し、デバイスリストを読み込む
+    permissionBtn.addEventListener('click', async () => {
+      try {
+        // 仮のストリームを取得して許可ダイアログを起動
+        const dummyStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        
+        // 許可が得られたらダミーのストリームを一度解放
+        dummyStream.getTracks().forEach(track => track.stop());
+
+        // 許可が得られた後でないと、カメラのラベル名（名前）が取得できない仕様のためここで列挙する
+        await populateCameraList();
+
+        permissionBtn.style.display = 'none'; // 許可ボタンを非表示
+        cameraSelect.disabled = false;
+        status.textContent = 'カメラを選択してください。';
+
+      } catch (err) {
+        alert('カメラまたはマイクの使用許可が得られませんでした。ブラウザの設定から許可してください。');
+        status.textContent = 'カメラへのアクセスが拒否されました。';
+      }
+    });
+
+    // カメラデバイスリストの取得
+    async function populateCameraList() {
       const devices = await navigator.mediaDevices.enumerateDevices();
       const videoDevices = devices.filter(device => device.kind === 'videoinput');
       
@@ -99,11 +123,7 @@
       });
     }
 
-    // カメラデバイス更新イベント
-    navigator.mediaDevices.addEventListener('devicechange', getCameras);
-    getCameras();
-
-    // 2. 選択されたカメラの起動
+    // 2. 選択したカメラの切り替えと映像表示
     cameraSelect.addEventListener('change', async () => {
       if (!cameraSelect.value) return;
 
@@ -119,23 +139,21 @@
         video.srcObject = currentStream;
         video.play();
 
-        // 映像をCanvasに連続描画（クロップ処理）
         renderCanvas();
 
         captureBtn.disabled = false;
         status.textContent = '準備完了。「1コマ撮影」を押してください。';
       } catch (err) {
-        alert('カメラの起動に失敗しました。');
+        alert('カメラの切り替えに失敗しました。');
       }
     });
 
-    // 映像を9:16にクロップして描画するループ処理
+    // 9:16にクロップ描画するループ
     function renderCanvas() {
       if (video.videoWidth > 0) {
         const vWidth = video.videoWidth;
         const vHeight = video.videoHeight;
 
-        // 9:16比率に合わせてソース映像の中央を切り抜く計算
         let sWidth = vHeight * (9 / 16);
         let sHeight = vHeight;
         let sx = (vWidth - sWidth) / 2;
@@ -150,17 +168,14 @@
 
         ctx.drawImage(video, sx, sy, sWidth, sHeight, 0, 0, canvas.width, canvas.height);
       }
-      animationFrameId = requestAnimationFrame(renderCanvas);
+      requestAnimationFrame(renderCanvas);
     }
 
     // 3. 1コマ手動撮影
     captureBtn.addEventListener('click', () => {
       const duration = parseFloat(secInput.value) * 1000;
-      
-      // Canvasからストリームを取得（描画内容をそのまま録画）
       const canvasStream = canvas.captureStream(30);
       
-      // マイク音声を追加
       if (currentStream.getAudioTracks().length > 0) {
         canvasStream.addTrack(currentStream.getAudioTracks()[0]);
       }
@@ -171,7 +186,6 @@
       recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
       
       recorder.onstop = () => {
-        // 1コマ分のBlobを作成して配列に保持
         const singleChunkBlob = new Blob(chunks, { type: 'video/webm' });
         recordedChunks.push(singleChunkBlob);
 
@@ -181,7 +195,6 @@
         status.textContent = `コマを撮影しました。（現在: ${recordedChunks.length}コマ）`;
       };
 
-      // 撮影実行
       captureBtn.disabled = true;
       status.textContent = `撮影中... (${secInput.value}秒)`;
       recorder.start();
@@ -194,7 +207,7 @@
     // 4. 直前のコマを削除
     deleteBtn.addEventListener('click', () => {
       if (recordedChunks.length > 0) {
-        recordedChunks.pop(); // 最後の要素を取り除く
+        recordedChunks.pop();
         status.textContent = `直前のコマを削除しました。（残り: ${recordedChunks.length}コマ）`;
         
         if (recordedChunks.length === 0) {
@@ -204,11 +217,10 @@
       }
     });
 
-    // 5. 撮影終了・動画の結合
+    // 5. 撮影終了と結合
     finishBtn.addEventListener('click', () => {
       if (recordedChunks.length === 0) return;
 
-      // 蓄積されたコマ（Blob）を1つの動画ファイルに結合
       const finalBlob = new Blob(recordedChunks, { type: 'video/webm' });
       const videoUrl = URL.createObjectURL(finalBlob);
 
@@ -216,7 +228,7 @@
       result.src = videoUrl;
       result.style.display = 'block';
 
-      status.textContent = '動画の結合が完了しました！プレビューから保存してください。';
+      status.textContent = '動画の結合が完了しました！';
     });
   </script>
 </body>
