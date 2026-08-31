@@ -3,26 +3,48 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>連続動画撮影アプリ</title>
+  <title>連続動画撮影アプリ（縦画面対応）</title>
   <style>
-    body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; gap: 15px; padding: 20px; }
-    video { width: 100%; max-width: 400px; background: #000; border-radius: 8px; }
-    .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
-    button { padding: 8px 16px; cursor: pointer; }
+    body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; gap: 15px; padding: 20px; background: #f4f4f4; }
+    
+    /* 9:16の縦長アスペクト比に固定 */
+    .video-container {
+      width: 100%;
+      max-width: 320px;
+      aspect-ratio: 9 / 16;
+      background: #000;
+      border-radius: 12px;
+      overflow: hidden;
+      box-shadow: 0 4px 10px rgba(0,0,0,0.15);
+    }
+    video { width: 100%; height: 100%; object-fit: cover; }
+
+    .controls { display: flex; flex-direction: column; gap: 10px; align-items: center; width: 100%; max-width: 320px; }
+    .input-group { display: flex; gap: 8px; align-items: center; }
+    .btn-group { display: flex; gap: 8px; width: 100%; }
+    button { flex: 1; padding: 10px; cursor: pointer; border: none; border-radius: 6px; background: #007bff; color: white; font-weight: bold; }
+    button:disabled { background: #ccc; cursor: not-allowed; }
   </style>
 </head>
 <body>
 
-  <h2>連続動画撮影</h2>
+  <h2>縦長（9:16）動画撮影</h2>
   
-  <video id="preview" autoplay playsinline muted></video>
-  <video id="result" controls style="display:none;"></video>
+  <div class="video-container">
+    <video id="preview" autoplay playsinline muted></video>
+    <video id="result" controls style="display:none;"></video>
+  </div>
 
   <div class="controls">
-    <label>1コマの秒数: <input type="number" id="secInput" value="3" min="1" style="width:50px;"></label>
-    <button id="startBtn">カメラ起動</button>
-    <button id="recordBtn" disabled>撮影開始</button>
-    <button id="stopBtn" disabled>撮影終了・結合</button>
+    <div class="input-group">
+      <label for="secInput">1コマの秒数:</label>
+      <input type="number" id="secInput" value="3" min="1" style="width:50px; padding: 4px;"> 秒
+    </div>
+    <div class="btn-group">
+      <button id="startBtn">カメラ起動</button>
+      <button id="recordBtn" disabled>撮影開始</button>
+      <button id="stopBtn" disabled>終了・結合</button>
+    </div>
   </div>
 
   <p id="status">カメラを起動してください。</p>
@@ -41,16 +63,23 @@
     const stopBtn = document.getElementById('stopBtn');
     const status = document.getElementById('status');
 
-    // 1. カメラの起動
+    // 1. カメラの起動（縦長 9:16 の解像度を要求）
     startBtn.addEventListener('click', async () => {
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        stream = await navigator.mediaDevices.getUserMedia({ 
+          video: { 
+            width: { ideal: 1080 },
+            height: { ideal: 1920 },
+            facingMode: "user" // スマホのインカメラを優先（リアカメラ希望なら "environment"）
+          }, 
+          audio: true 
+        });
         preview.srcObject = stream;
         startBtn.disabled = true;
         recordBtn.disabled = false;
         status.textContent = '準備完了。「撮影開始」を押してください。';
       } catch (err) {
-        alert('カメラへのアクセスが拒否されたか、利用できません。');
+        alert('カメラへのアクセスが拒否されたか、指定サイズに対応していません。');
       }
     });
 
@@ -61,13 +90,12 @@
       recordBtn.disabled = true;
       stopBtn.disabled = false;
       result.style.display = 'none';
+      preview.style.display = 'block';
 
       const intervalSec = parseFloat(secInput.value) * 1000;
 
-      // MediaRecorderの初期化
       mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
 
-      // 指定ミリ秒ごとにデータ（WebMのチャンク）を生成して配列に蓄積
       mediaRecorder.ondataavailable = (e) => {
         if (e.data.size > 0) {
           recordedChunks.push(e.data);
@@ -75,27 +103,26 @@
         }
       };
 
-      // 指定した秒数間隔でデータを切り出す（タイムスライス機能）
       mediaRecorder.start(intervalSec);
       status.textContent = '撮影を開始しました...';
     });
 
-    // 3. 撮影終了と結合（Blob生成）
+    // 3. 撮影終了と結合
     stopBtn.addEventListener('click', () => {
       isRecording = false;
       mediaRecorder.stop();
 
       mediaRecorder.onstop = () => {
-        // 取得した全チャンクを1つのBlob（動画ファイル）に結合
         const blob = new Blob(recordedChunks, { type: 'video/webm' });
         const videoUrl = URL.createObjectURL(blob);
 
+        preview.style.display = 'none';
         result.src = videoUrl;
         result.style.display = 'block';
 
         recordBtn.disabled = false;
         stopBtn.disabled = true;
-        status.textContent = '動画の結合が完了しました！プレビューから保存できます。';
+        status.textContent = '動画の結合が完了しました！';
       };
     });
   </script>
