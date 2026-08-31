@@ -3,9 +3,10 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>連続コマ撮りアプリ（カメラ許可対応）</title>
+  <title>連続コマ撮りアプリ（ダウンロード機能付き）</title>
   <style>
-    body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 15px; background: #f4f4f4; margin: 0; }
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 15px; background: #f4f4f4; margin: 0; }
     
     .video-container {
       position: relative;
@@ -21,15 +22,18 @@
     #videoPreview { display: none; }
 
     .controls { display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 320px; }
-    select, input, button { padding: 10px; font-size: 14px; border-radius: 6px; border: 1px solid #ccc; }
+    select, input, button, a.btn { padding: 10px; font-size: 14px; border-radius: 6px; border: 1px solid #ccc; font-family: inherit; }
     .btn-group { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-    button { cursor: pointer; background: #007bff; color: white; border: none; font-weight: bold; }
-    button:disabled { background: #ccc; cursor: not-allowed; }
+    button, a.btn { cursor: pointer; background: #007bff; color: white; border: none; font-weight: bold; text-align: center; text-decoration: none; display: inline-block; box-sizing: border-box; }
+    button:disabled, a.btn.disabled { background: #ccc; cursor: not-allowed; pointer-events: none; opacity: 0.6; }
     button.danger { background: #dc3545; }
     button.success { background: #28a745; }
     
-    /* 許可ボタン用スタイル */
+    /* ダウンロードボタン用スタイル */
+    a.download-btn { background: #17a2b8; display: none; font-size: 16px; padding: 12px; }
+    
     #permissionBtn { background: #17a2b8; font-size: 16px; padding: 12px; }
+    #status { margin: 5px 0; font-size: 14px; color: #333; text-align: center; }
   </style>
 </head>
 <body>
@@ -43,7 +47,7 @@
   </div>
 
   <div class="controls">
-    <!-- 最初に使用許可を得るための領域 -->
+    <!-- 最初に使用許可を得る領域 -->
     <button id="permissionBtn">カメラとマイクの使用を許可する</button>
 
     <!-- 許可後に有効化される操作群 -->
@@ -62,13 +66,15 @@
       <button id="deleteBtn" class="danger" disabled>直前コマ削除</button>
       <button id="finishBtn" disabled>撮影終了・結合</button>
     </div>
+
+    <!-- 動画生成後に表示されるダウンロードボタン -->
+    <a id="downloadBtn" class="btn download-btn">動画をダウンロード</a>
   </div>
 
   <p id="status">「カメラとマイクの使用を許可する」を押してください。</p>
 
   <script>
     let currentStream;
-    let mediaRecorder;
     let recordedChunks = [];
 
     const video = document.getElementById('videoPreview');
@@ -82,24 +88,21 @@
     const captureBtn = document.getElementById('captureBtn');
     const deleteBtn = document.getElementById('deleteBtn');
     const finishBtn = document.getElementById('finishBtn');
+    const downloadBtn = document.getElementById('downloadBtn');
     const status = document.getElementById('status');
 
     canvas.width = 720;
     canvas.height = 1280;
 
-    // 1. 最初に使用許可を取得し、デバイスリストを読み込む
+    // 1. 最初に使用許可を取得
     permissionBtn.addEventListener('click', async () => {
       try {
-        // 仮のストリームを取得して許可ダイアログを起動
         const dummyStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
-        
-        // 許可が得られたらダミーのストリームを一度解放
         dummyStream.getTracks().forEach(track => track.stop());
 
-        // 許可が得られた後でないと、カメラのラベル名（名前）が取得できない仕様のためここで列挙する
         await populateCameraList();
 
-        permissionBtn.style.display = 'none'; // 許可ボタンを非表示
+        permissionBtn.style.display = 'none';
         cameraSelect.disabled = false;
         status.textContent = 'カメラを選択してください。';
 
@@ -123,7 +126,7 @@
       });
     }
 
-    // 2. 選択したカメラの切り替えと映像表示
+    // 2. カメラの切り替え
     cameraSelect.addEventListener('change', async () => {
       if (!cameraSelect.value) return;
 
@@ -176,7 +179,7 @@
       const duration = parseFloat(secInput.value) * 1000;
       const canvasStream = canvas.captureStream(30);
       
-      if (currentStream.getAudioTracks().length > 0) {
+      if (currentStream && currentStream.getAudioTracks().length > 0) {
         canvasStream.addTrack(currentStream.getAudioTracks()[0]);
       }
 
@@ -217,18 +220,32 @@
       }
     });
 
-    // 5. 撮影終了と結合
+    // 5. 撮影終了・結合とダウンロード設定
     finishBtn.addEventListener('click', () => {
       if (recordedChunks.length === 0) return;
 
       const finalBlob = new Blob(recordedChunks, { type: 'video/webm' });
       const videoUrl = URL.createObjectURL(finalBlob);
 
+      // プレビュー表示切り替え
       canvas.style.display = 'none';
       result.src = videoUrl;
       result.style.display = 'block';
 
-      status.textContent = '動画の結合が完了しました！';
+      // 日時（YYYYMMDD_HHMMSS）付きファイル名でダウンロードボタンを設定
+      const now = new Date();
+      const timestamp = now.getFullYear() +
+        String(now.getMonth() + 1).padStart(2, '0') +
+        String(now.getDate()).padStart(2, '0') + '_' +
+        String(now.getHours()).padStart(2, '0') +
+        String(now.getMinutes()).padStart(2, '0') +
+        String(now.getSeconds()).padStart(2, '0');
+
+      downloadBtn.href = videoUrl;
+      downloadBtn.download = `video_${timestamp}.webm`;
+      downloadBtn.style.display = 'block';
+
+      status.textContent = '動画の結合が完了しました！下のボタンからダウンロードできます。';
     });
   </script>
 </body>
