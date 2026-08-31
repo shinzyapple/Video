@@ -3,127 +3,220 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>連続動画撮影アプリ（縦画面対応）</title>
+  <title>連続コマ撮りアプリ（回転対応）</title>
   <style>
-    body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; gap: 15px; padding: 20px; background: #f4f4f4; }
+    body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 15px; background: #f4f4f4; margin: 0; }
     
-    /* 9:16の縦長アスペクト比に固定 */
     .video-container {
+      position: relative;
       width: 100%;
       max-width: 320px;
       aspect-ratio: 9 / 16;
       background: #000;
       border-radius: 12px;
       overflow: hidden;
-      box-shadow: 0 4px 10px rgba(0,0,0,0.15);
+      box-shadow: 0 4px 10px rgba(0,0,0,0.2);
     }
-    video { width: 100%; height: 100%; object-fit: cover; }
+    /* 描画・プレビュー用キャンバスと動画表示 */
+    canvas, video { width: 100%; height: 100%; object-fit: cover; }
+    #videoPreview { display: none; } /* 内部処理用 */
 
-    .controls { display: flex; flex-direction: column; gap: 10px; align-items: center; width: 100%; max-width: 320px; }
-    .input-group { display: flex; gap: 8px; align-items: center; }
-    .btn-group { display: flex; gap: 8px; width: 100%; }
-    button { flex: 1; padding: 10px; cursor: pointer; border: none; border-radius: 6px; background: #007bff; color: white; font-weight: bold; }
+    .controls { display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 320px; }
+    select, input, button { padding: 10px; font-size: 14px; border-radius: 6px; border: 1px solid #ccc; }
+    .btn-group { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    button { cursor: pointer; background: #007bff; color: white; border: none; font-weight: bold; }
     button:disabled { background: #ccc; cursor: not-allowed; }
+    button.danger { background: #dc3545; }
+    button.success { background: #28a745; }
   </style>
 </head>
 <body>
 
-  <h2>縦長（9:16）動画撮影</h2>
-  
+  <h2>コマ撮り撮影（縦9:16対応）</h2>
+
   <div class="video-container">
-    <video id="preview" autoplay playsinline muted></video>
+    <video id="videoPreview" autoplay playsinline muted></video>
+    <canvas id="canvasPreview"></canvas>
     <video id="result" controls style="display:none;"></video>
   </div>
 
   <div class="controls">
-    <div class="input-group">
-      <label for="secInput">1コマの秒数:</label>
-      <input type="number" id="secInput" value="3" min="1" style="width:50px; padding: 4px;"> 秒
+    <!-- カメラ選択 -->
+    <select id="cameraSelect">
+      <option value="">カメラを選択してください</option>
+    </select>
+
+    <!-- コマ秒数設定 -->
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <label for="secInput">1コマの撮影時間:</label>
+      <input type="number" id="secInput" value="3" min="1" style="width:60px;"> 秒
     </div>
+
+    <!-- 操作ボタン -->
+    <button id="captureBtn" class="success" disabled>1コマ撮影</button>
+    
     <div class="btn-group">
-      <button id="startBtn">カメラ起動</button>
-      <button id="recordBtn" disabled>撮影開始</button>
-      <button id="stopBtn" disabled>終了・結合</button>
+      <button id="deleteBtn" class="danger" disabled>直前コマ削除</button>
+      <button id="finishBtn" disabled>撮影終了・結合</button>
     </div>
   </div>
 
-  <p id="status">カメラを起動してください。</p>
+  <p id="status">カメラを選択して起動してください。</p>
 
   <script>
-    let stream;
+    let currentStream;
     let mediaRecorder;
     let recordedChunks = [];
-    let isRecording = false;
+    let animationFrameId;
 
-    const preview = document.getElementById('preview');
+    const video = document.getElementById('videoPreview');
+    const canvas = document.getElementById('canvasPreview');
+    const ctx = canvas.getContext('2d');
     const result = document.getElementById('result');
+    
+    const cameraSelect = document.getElementById('cameraSelect');
     const secInput = document.getElementById('secInput');
-    const startBtn = document.getElementById('startBtn');
-    const recordBtn = document.getElementById('recordBtn');
-    const stopBtn = document.getElementById('stopBtn');
+    const captureBtn = document.getElementById('captureBtn');
+    const deleteBtn = document.getElementById('deleteBtn');
+    const finishBtn = document.getElementById('finishBtn');
     const status = document.getElementById('status');
 
-    // 1. カメラの起動（縦長 9:16 の解像度を要求）
-    startBtn.addEventListener('click', async () => {
+    // Canvasサイズを縦長9:16（720x1280）に固定設定
+    canvas.width = 720;
+    canvas.height = 1280;
+
+    // 1. 利用可能なカメラデバイスの取得・列挙
+    async function getCameras() {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      const videoDevices = devices.filter(device => device.kind === 'videoinput');
+      
+      cameraSelect.innerHTML = '<option value="">カメラを選択してください</option>';
+      videoDevices.forEach((device, index) => {
+        const option = document.createElement('option');
+        option.value = device.deviceId;
+        option.text = device.label || `カメラ ${index + 1}`;
+        cameraSelect.appendChild(option);
+      });
+    }
+
+    // カメラデバイス更新イベント
+    navigator.mediaDevices.addEventListener('devicechange', getCameras);
+    getCameras();
+
+    // 2. 選択されたカメラの起動
+    cameraSelect.addEventListener('change', async () => {
+      if (!cameraSelect.value) return;
+
+      if (currentStream) {
+        currentStream.getTracks().forEach(track => track.stop());
+      }
+
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ 
-          video: { 
-            width: { ideal: 1080 },
-            height: { ideal: 1920 },
-            facingMode: "user" // スマホのインカメラを優先（リアカメラ希望なら "environment"）
-          }, 
-          audio: true 
+        currentStream = await navigator.mediaDevices.getUserMedia({
+          video: { deviceId: { exact: cameraSelect.value } },
+          audio: true
         });
-        preview.srcObject = stream;
-        startBtn.disabled = true;
-        recordBtn.disabled = false;
-        status.textContent = '準備完了。「撮影開始」を押してください。';
+        video.srcObject = currentStream;
+        video.play();
+
+        // 映像をCanvasに連続描画（クロップ処理）
+        renderCanvas();
+
+        captureBtn.disabled = false;
+        status.textContent = '準備完了。「1コマ撮影」を押してください。';
       } catch (err) {
-        alert('カメラへのアクセスが拒否されたか、指定サイズに対応していません。');
+        alert('カメラの起動に失敗しました。');
       }
     });
 
-    // 2. 指定秒数ごとの連続撮影処理
-    recordBtn.addEventListener('click', () => {
-      recordedChunks = [];
-      isRecording = true;
-      recordBtn.disabled = true;
-      stopBtn.disabled = false;
-      result.style.display = 'none';
-      preview.style.display = 'block';
+    // 映像を9:16にクロップして描画するループ処理
+    function renderCanvas() {
+      if (video.videoWidth > 0) {
+        const vWidth = video.videoWidth;
+        const vHeight = video.videoHeight;
 
-      const intervalSec = parseFloat(secInput.value) * 1000;
+        // 9:16比率に合わせてソース映像の中央を切り抜く計算
+        let sWidth = vHeight * (9 / 16);
+        let sHeight = vHeight;
+        let sx = (vWidth - sWidth) / 2;
+        let sy = 0;
 
-      mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
-
-      mediaRecorder.ondataavailable = (e) => {
-        if (e.data.size > 0) {
-          recordedChunks.push(e.data);
-          status.textContent = `撮影中... (${recordedChunks.length}コマ目保存完了)`;
+        if (sWidth > vWidth) {
+          sWidth = vWidth;
+          sHeight = vWidth * (16 / 9);
+          sx = 0;
+          sy = (vHeight - sHeight) / 2;
         }
+
+        ctx.drawImage(video, sx, sy, sWidth, sHeight, 0, 0, canvas.width, canvas.height);
+      }
+      animationFrameId = requestAnimationFrame(renderCanvas);
+    }
+
+    // 3. 1コマ手動撮影
+    captureBtn.addEventListener('click', () => {
+      const duration = parseFloat(secInput.value) * 1000;
+      
+      // Canvasからストリームを取得（描画内容をそのまま録画）
+      const canvasStream = canvas.captureStream(30);
+      
+      // マイク音声を追加
+      if (currentStream.getAudioTracks().length > 0) {
+        canvasStream.addTrack(currentStream.getAudioTracks()[0]);
+      }
+
+      const recorder = new MediaRecorder(canvasStream, { mimeType: 'video/webm' });
+      const chunks = [];
+
+      recorder.ondataavailable = e => { if (e.data.size > 0) chunks.push(e.data); };
+      
+      recorder.onstop = () => {
+        // 1コマ分のBlobを作成して配列に保持
+        const singleChunkBlob = new Blob(chunks, { type: 'video/webm' });
+        recordedChunks.push(singleChunkBlob);
+
+        captureBtn.disabled = false;
+        deleteBtn.disabled = false;
+        finishBtn.disabled = false;
+        status.textContent = `コマを撮影しました。（現在: ${recordedChunks.length}コマ）`;
       };
 
-      mediaRecorder.start(intervalSec);
-      status.textContent = '撮影を開始しました...';
+      // 撮影実行
+      captureBtn.disabled = true;
+      status.textContent = `撮影中... (${secInput.value}秒)`;
+      recorder.start();
+
+      setTimeout(() => {
+        recorder.stop();
+      }, duration);
     });
 
-    // 3. 撮影終了と結合
-    stopBtn.addEventListener('click', () => {
-      isRecording = false;
-      mediaRecorder.stop();
+    // 4. 直前のコマを削除
+    deleteBtn.addEventListener('click', () => {
+      if (recordedChunks.length > 0) {
+        recordedChunks.pop(); // 最後の要素を取り除く
+        status.textContent = `直前のコマを削除しました。（残り: ${recordedChunks.length}コマ）`;
+        
+        if (recordedChunks.length === 0) {
+          deleteBtn.disabled = true;
+          finishBtn.disabled = true;
+        }
+      }
+    });
 
-      mediaRecorder.onstop = () => {
-        const blob = new Blob(recordedChunks, { type: 'video/webm' });
-        const videoUrl = URL.createObjectURL(blob);
+    // 5. 撮影終了・動画の結合
+    finishBtn.addEventListener('click', () => {
+      if (recordedChunks.length === 0) return;
 
-        preview.style.display = 'none';
-        result.src = videoUrl;
-        result.style.display = 'block';
+      // 蓄積されたコマ（Blob）を1つの動画ファイルに結合
+      const finalBlob = new Blob(recordedChunks, { type: 'video/webm' });
+      const videoUrl = URL.createObjectURL(finalBlob);
 
-        recordBtn.disabled = false;
-        stopBtn.disabled = true;
-        status.textContent = '動画の結合が完了しました！';
-      };
+      canvas.style.display = 'none';
+      result.src = videoUrl;
+      result.style.display = 'block';
+
+      status.textContent = '動画の結合が完了しました！プレビューから保存してください。';
     });
   </script>
 </body>
