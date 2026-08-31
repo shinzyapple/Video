@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>連続動画撮影アプリ</title>
+  <style>
+    body { font-family: sans-serif; display: flex; flex-direction: column; align-items: center; gap: 15px; padding: 20px; }
+    video { width: 100%; max-width: 400px; background: #000; border-radius: 8px; }
+    .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+    button { padding: 8px 16px; cursor: pointer; }
+  </style>
+</head>
+<body>
+
+  <h2>連続動画撮影</h2>
+  
+  <video id="preview" autoplay playsinline muted></video>
+  <video id="result" controls style="display:none;"></video>
+
+  <div class="controls">
+    <label>1コマの秒数: <input type="number" id="secInput" value="3" min="1" style="width:50px;"></label>
+    <button id="startBtn">カメラ起動</button>
+    <button id="recordBtn" disabled>撮影開始</button>
+    <button id="stopBtn" disabled>撮影終了・結合</button>
+  </div>
+
+  <p id="status">カメラを起動してください。</p>
+
+  <script>
+    let stream;
+    let mediaRecorder;
+    let recordedChunks = [];
+    let isRecording = false;
+
+    const preview = document.getElementById('preview');
+    const result = document.getElementById('result');
+    const secInput = document.getElementById('secInput');
+    const startBtn = document.getElementById('startBtn');
+    const recordBtn = document.getElementById('recordBtn');
+    const stopBtn = document.getElementById('stopBtn');
+    const status = document.getElementById('status');
+
+    // 1. カメラの起動
+    startBtn.addEventListener('click', async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        preview.srcObject = stream;
+        startBtn.disabled = true;
+        recordBtn.disabled = false;
+        status.textContent = '準備完了。「撮影開始」を押してください。';
+      } catch (err) {
+        alert('カメラへのアクセスが拒否されたか、利用できません。');
+      }
+    });
+
+    // 2. 指定秒数ごとの連続撮影処理
+    recordBtn.addEventListener('click', () => {
+      recordedChunks = [];
+      isRecording = true;
+      recordBtn.disabled = true;
+      stopBtn.disabled = false;
+      result.style.display = 'none';
+
+      const intervalSec = parseFloat(secInput.value) * 1000;
+
+      // MediaRecorderの初期化
+      mediaRecorder = new MediaRecorder(stream, { mimeType: 'video/webm' });
+
+      // 指定ミリ秒ごとにデータ（WebMのチャンク）を生成して配列に蓄積
+      mediaRecorder.ondataavailable = (e) => {
+        if (e.data.size > 0) {
+          recordedChunks.push(e.data);
+          status.textContent = `撮影中... (${recordedChunks.length}コマ目保存完了)`;
+        }
+      };
+
+      // 指定した秒数間隔でデータを切り出す（タイムスライス機能）
+      mediaRecorder.start(intervalSec);
+      status.textContent = '撮影を開始しました...';
+    });
+
+    // 3. 撮影終了と結合（Blob生成）
+    stopBtn.addEventListener('click', () => {
+      isRecording = false;
+      mediaRecorder.stop();
+
+      mediaRecorder.onstop = () => {
+        // 取得した全チャンクを1つのBlob（動画ファイル）に結合
+        const blob = new Blob(recordedChunks, { type: 'video/webm' });
+        const videoUrl = URL.createObjectURL(blob);
+
+        result.src = videoUrl;
+        result.style.display = 'block';
+
+        recordBtn.disabled = false;
+        stopBtn.disabled = true;
+        status.textContent = '動画の結合が完了しました！プレビューから保存できます。';
+      };
+    });
+  </script>
+</body>
+</html>
